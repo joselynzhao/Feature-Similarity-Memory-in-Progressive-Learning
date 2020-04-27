@@ -26,10 +26,11 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 class REID():
-    def __init__(self, model_name, batch_size, num_classes, data_dir, l_data, u_data, save_path, dropout=0.5, max_frames=100):
+    def __init__(self, model_name, batch_size, mode,num_classes, data_dir, l_data, u_data, save_path, dropout=0.5, max_frames=100):
 
         self.model_name = model_name
         self.num_classes = num_classes
+        self.mode = mode
         self.data_dir = data_dir
         self.save_path = save_path
 
@@ -171,6 +172,40 @@ class REID():
             num_correct_pred, u_feas.shape[0], label_pre))
         return labels, scores, label_pre
 
+    def estimate_label_FSM(self,step): #特征相似性记忆
+        # extract feature
+        u_feas = self.get_feature(self.u_data)
+        l_feas = self.get_feature(self.l_data)
+        print("u_features", u_feas.shape, "l_features", l_feas.shape)
+        scores = np.zeros((u_feas.shape[0]))
+        labels = np.zeros((u_feas.shape[0]))
+        num_correct_pred = 0
+
+        dists = []
+        dists_old = np.load('dists.npy') if step !=0 else []
+
+        for idx, u_fea in enumerate(u_feas):
+            diffs = l_feas - u_fea
+            dist = np.linalg.norm(diffs, axis=1)
+            # 在这里修改dist的值
+            if step ==0 :
+                dists.append(dist)
+            else :
+                dist_old = dists_old[idx]
+                for k in range(len(dist)):
+                    dist[k] = (dist_old[k]*step+dist[k]*(step+1))/(step*2+1)
+                dists.append(dist)
+            index_min = np.argmin(dist)
+            scores[idx] = - dist[index_min]  # "- dist" : more dist means less score
+            labels[idx] = self.l_label[index_min]  # take the nearest labled neighbor as the prediction label
+            if self.u_label[idx] == labels[idx]:
+                num_correct_pred += 1
+        label_pre = num_correct_pred / u_feas.shape[0]
+        np.save('dists',dists)
+        print("predictions on all the unlabeled data: {} of {} is correct, accuracy = {:0.3f}".format(
+            num_correct_pred, u_feas.shape[0], label_pre))
+        return labels, scores, label_pre
+
 
 
 
@@ -182,21 +217,18 @@ class REID():
         return v.astype('bool')
 
 
-    def generate_new_train_data(self, sel_idx, pred_y,u_data):
+    def generate_new_train_data(self, sel_idx, pred_y):
         """ generate the next training data """
-        u_label =  np.array([label for _,label,_,_ in u_data])
+        u_label =  np.array([label for _,label,_,_ in self.u_data])
         seletcted_data = []
         correct, total = 0, 0
         for i, flag in enumerate(sel_idx):
             if flag: # if selected
-                seletcted_data.append([u_data[i][0], int(pred_y[i]), u_data[i][2], u_data[i][3]])
+                seletcted_data.append([self.u_data[i][0], int(pred_y[i]), self.u_data[i][2], self.u_data[i][3]])
                 total += 1
                 if u_label[i] == int(pred_y[i]):
                     correct += 1
-        if total == 0:
-            acc = 1
-        else : acc = correct / total
-
+        acc = correct / total
         new_train_data = seletcted_data
         print("selected pseudo-labeled data: {} of {} is correct, accuracy: {:0.4f}  new train data: {}".format(
                 correct, len(seletcted_data), acc, len(new_train_data)))
